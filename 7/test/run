@@ -1,0 +1,105 @@
+#!/bin/bash
+#
+# The 'run' script performs simple tests that verifies usability
+# of tools, packaged in toolchain image.
+#
+# IMAGE_NAME specifies a name of the candidate image used for testing.
+# The image has to be available before this script is executed.
+#
+# DEBUG environment variable, if not empty, makes 'run' to log every step
+# of testing.
+#
+
+if [ "$DEBUG" != "" ]; then
+  set -x
+fi
+
+IMAGE_NAME=${IMAGE_NAME:-rhscl-tech-preview/rust-toolset-7-rhel7}
+THISDIR=$(dirname ${BASH_SOURCE[0]})
+
+function info () {
+    echo -e "\e[1m[INFO] $@\e[0m"
+}
+
+function pass () {
+    echo -e "\e[1;32m[PASS] $@\e[0m"
+}
+
+function error () {
+    echo -e "\e[1;31m[ERROR] $@\e[0m"
+}
+
+function check_result() {
+    local label="$1"
+    local result="$2"
+    local expected="$3"
+
+    if [[ "$result" = "$expected" ]]; then
+        pass "$label: PASS"
+    else
+        error "$label: FAIL ($result)"
+        RESULT=1
+    fi
+}
+
+function test_docker_run_usage () {
+  info "Testing 'docker run' usage ..."
+
+  docker run --rm $IMAGE_NAME > $TMPDIR/actual-usage
+  check_result "Exit code is zero" $? 0
+
+  diff "$THISDIR"/expected-usage $TMPDIR/actual-usage &> /dev/null
+  check_result "Usage info matches the expected text" $? 0
+}
+
+function test_sanity_rustc_usage () {
+  info "Testing 'rustc -V' usage ..."
+
+  docker run --rm $IMAGE_NAME rustc -V &> $TMPDIR/actual-clang-v
+  check_result "Exit code is zero" $? 0
+
+  grep 'rustc 1\.20\.0' $TMPDIR/actual-rustc-V &> /dev/null
+  check_result "Output contains rustc version" $? 0
+}
+
+function test_rustc_compile () {
+  info "Testing compilation via 'docker run rustc foo.c ..."
+
+  rm -f $TMPDIR/foo $TMPDIR/foo.rs
+
+  cat << EOF > $TMPDIR/foo.rs
+fn main() { println!("Hello world from containerized rustc!"); }
+EOF
+
+  docker run --rm -v $TMPDIR:$TMPDIR:z $IMAGE_NAME rustc -o $TMPDIR/foo $TMPDIR/foo.rs
+  check_result "Exit code is zero" $? 0
+
+  test -e $TMPDIR/foo
+  check_result "Compiled binary exists" $? 0
+
+  $TMPDIR/foo &> $TMPDIR/actual-output
+  check_result "Exit code of compiled binary is zero" $? 0
+
+  grep "Hello world from containerized rustc!" $TMPDIR/actual-output &> /dev/null
+  check_result "Compiled binary works" $? 0
+}
+
+TMPDIR=`mktemp -d`
+chmod a+rwx $TMPDIR
+
+RESULT=0
+
+test_docker_run_usage
+#test_sanity_clang_usage
+#test_sanity_lldb_usage
+test_rustc_compile
+#test_lldb_batch_debug
+
+rm -rf $TMPDIR
+
+if [ "$RESULT" = "0" ]; then
+    info "All tests finished"
+else
+    error "Some tests failed"
+    exit $RESULT
+fi
